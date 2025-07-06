@@ -1,0 +1,25 @@
+{
+  "name": "smartstock",
+  "version": "1.0.0",
+  "description": "SmartStock Inventory Management System",
+  "scripts": {
+    "setup": "./setup.sh",
+    "setup-db": "cd backend && npm run migrate && npm run seed",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "cd backend && npm start",
+    "install-all": "npm install && cd backend && npm install && cd ../frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": ["inventory", "management", "stock", "business", "react", "nodejs"],
+  "author": "SmartStock Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/smartstock.git"
+  }
+}
