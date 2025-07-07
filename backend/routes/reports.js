@@ -11,16 +11,35 @@ const router = express.Router();
 // @access  Private
 router.get('/inventory-summary', authenticateToken, async (req, res) => {
     try {
-        const { startDate, endDate, categoryId, format = 'json' } = req.query;
+        const { startDate, endDate, categoryId, departmentId, format = 'json' } = req.query;
+        const { user } = req;
 
         let whereConditions = ['p.is_active = true'];
         let queryParams = [];
         let paramIndex = 1;
 
+        // Department-based access control
+        if (user.role === 'staff') {
+            if (!user.department_id) {
+                return res.status(403).json({ 
+                    error: 'Access denied. Staff must be assigned to a department to view reports.' 
+                });
+            }
+            // Staff can only see products from their department
+            whereConditions.push(`p.department_id = $${paramIndex}`);
+            queryParams.push(user.department_id);
+            paramIndex++;
+        } else if (departmentId) {
+            // Managers can filter by specific department
+            whereConditions.push(`p.department_id = $${paramIndex}`);
+            queryParams.push(departmentId);
+            paramIndex++;
+        }
+
         // Date filter for inventory movements
         let dateFilter = '';
         if (startDate && endDate) {
-            dateFilter = `AND il.timestamp BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+            dateFilter = `AND il.created_at BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
             queryParams.push(startDate, endDate);
             paramIndex += 2;
         }
@@ -40,23 +59,26 @@ router.get('/inventory-summary', authenticateToken, async (req, res) => {
                 p.id,
                 p.name,
                 p.sku,
-                p.quantity,
-                p.unit_price,
-                p.low_stock_threshold,
-                p.quantity * p.unit_price as total_value,
+                p.quantity_in_stock as quantity,
+                p.price as unit_price,
+                p.minimum_stock_level as low_stock_threshold,
+                p.quantity_in_stock * p.price as total_value,
                 c.name as category_name,
-                CASE WHEN p.quantity <= p.low_stock_threshold THEN true ELSE false END as is_low_stock,
+                d.name as department_name,
+                p.department_id,
+                CASE WHEN p.quantity_in_stock <= p.minimum_stock_level THEN true ELSE false END as is_low_stock,
                 COALESCE(movements.total_in, 0) as total_stock_in,
                 COALESCE(movements.total_out, 0) as total_stock_out,
                 COALESCE(movements.net_movement, 0) as net_movement
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN departments d ON p.department_id = d.id
             LEFT JOIN (
                 SELECT 
                     product_id,
-                    SUM(CASE WHEN change_type IN ('restock', 'return') THEN ABS(quantity_changed) ELSE 0 END) as total_in,
-                    SUM(CASE WHEN change_type IN ('sale') THEN ABS(quantity_changed) ELSE 0 END) as total_out,
-                    SUM(quantity_changed) as net_movement
+                    SUM(CASE WHEN type IN ('purchase', 'return') THEN ABS(quantity_change) ELSE 0 END) as total_in,
+                    SUM(CASE WHEN type IN ('sale') THEN ABS(quantity_change) ELSE 0 END) as total_out,
+                    SUM(quantity_change) as net_movement
                 FROM inventory_logs il
                 WHERE 1=1 ${dateFilter}
                 GROUP BY product_id
@@ -88,7 +110,8 @@ router.get('/inventory-summary', authenticateToken, async (req, res) => {
             filters: {
                 startDate,
                 endDate,
-                categoryId
+                categoryId,
+                departmentId: user.role === 'staff' ? user.department_id : departmentId
             }
         };
 
@@ -172,12 +195,15 @@ router.get('/low-stock', authenticateToken, async (req, res) => {
 
         const result = await db.query(`
             SELECT p.*, c.name as category_name,
-                   (p.low_stock_threshold - p.quantity) as units_needed,
-                   ROUND((p.quantity::float / p.low_stock_threshold) * 100, 2) as stock_percentage
+                   (p.minimum_stock_level - p.quantity_in_stock) as units_needed,
+                   CASE 
+                     WHEN p.minimum_stock_level > 0 THEN (p.quantity_in_stock * 100.0 / p.minimum_stock_level)
+                     ELSE 0 
+                   END as stock_percentage
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
-            WHERE p.quantity <= p.low_stock_threshold AND p.is_active = true
-            ORDER BY stock_percentage ASC, p.name
+            WHERE p.quantity_in_stock <= p.minimum_stock_level AND p.is_active = true
+            ORDER BY p.quantity_in_stock ASC, p.name
         `);
 
         const reportData = {
@@ -261,7 +287,7 @@ router.get('/inventory-movements', authenticateToken, async (req, res) => {
 
         // Date filter
         if (startDate && endDate) {
-            whereConditions.push(`il.timestamp BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
+            whereConditions.push(`il.created_at BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
             queryParams.push(startDate, endDate);
             paramIndex += 2;
         }
@@ -275,7 +301,7 @@ router.get('/inventory-movements', authenticateToken, async (req, res) => {
 
         // Change type filter
         if (changeType) {
-            whereConditions.push(`il.change_type = $${paramIndex}`);
+            whereConditions.push(`il.type = $${paramIndex}`);
             queryParams.push(changeType);
             paramIndex++;
         }
@@ -295,7 +321,7 @@ router.get('/inventory-movements', authenticateToken, async (req, res) => {
             JOIN products p ON il.product_id = p.id
             JOIN users u ON il.user_id = u.id
             ${whereClause}
-            ORDER BY il.timestamp DESC
+            ORDER BY il.created_at DESC
             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
         `, [...queryParams, limit, offset]);
 
@@ -418,6 +444,87 @@ router.get('/activity-logs', authenticateToken, requireManager, async (req, res)
     } catch (error) {
         console.error('Activity logs report error:', error);
         res.status(500).json({ error: 'Failed to generate activity logs report' });
+    }
+});
+
+// @route   GET /api/reports/sales-summary
+// @desc    Get sales summary report
+// @access  Private
+router.get('/sales-summary', authenticateToken, async (req, res) => {
+    try {
+        const { startDate, endDate, period = '30' } = req.query;
+        
+        let dateFilter = '';
+        let queryParams = [];
+        let paramIndex = 1;
+
+        if (startDate && endDate) {
+            dateFilter = `WHERE il.created_at BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+            queryParams.push(startDate, endDate);
+            paramIndex += 2;
+        } else {
+            dateFilter = `WHERE il.created_at >= NOW() - INTERVAL '${parseInt(period)} days'`;
+        }
+
+        // Get sales data
+        const salesQuery = `
+            SELECT 
+                COUNT(*) as total_sales,
+                SUM(ABS(il.quantity_change)) as total_units_sold,
+                SUM(ABS(il.quantity_change) * p.price) as total_revenue
+            FROM inventory_logs il
+            JOIN products p ON il.product_id = p.id
+            ${dateFilter}
+            AND il.type = 'sale'
+        `;
+
+        const topProductsQuery = `
+            SELECT 
+                p.name,
+                p.sku,
+                SUM(ABS(il.quantity_change)) as total_sold,
+                SUM(ABS(il.quantity_change) * p.price) as revenue
+            FROM inventory_logs il
+            JOIN products p ON il.product_id = p.id
+            ${dateFilter}
+            AND il.type = 'sale'
+            GROUP BY p.id, p.name, p.sku, p.price
+            ORDER BY total_sold DESC
+            LIMIT 10
+        `;
+
+        const categoryQuery = `
+            SELECT 
+                c.name as category_name,
+                SUM(ABS(il.quantity_change)) as total_sold,
+                SUM(ABS(il.quantity_change) * p.price) as revenue
+            FROM inventory_logs il
+            JOIN products p ON il.product_id = p.id
+            LEFT JOIN categories c ON p.category_id = c.id
+            ${dateFilter}
+            AND il.type = 'sale'
+            GROUP BY c.id, c.name
+            ORDER BY total_sold DESC
+        `;
+
+        const salesResult = await db.query(salesQuery, queryParams);
+        const topProductsResult = await db.query(topProductsQuery, queryParams);
+        const categoryResult = await db.query(categoryQuery, queryParams);
+
+        const reportData = {
+            period: `Last ${period} days`,
+            totalSales: parseInt(salesResult.rows[0]?.total_sales || 0),
+            totalUnitsSold: parseInt(salesResult.rows[0]?.total_units_sold || 0),
+            totalRevenue: parseFloat(salesResult.rows[0]?.total_revenue || 0),
+            topProducts: topProductsResult.rows,
+            salesByCategory: categoryResult.rows,
+            generatedAt: new Date().toISOString()
+        };
+
+        res.json(reportData);
+    } catch (error) {
+        console.error('Sales summary error:', error);
+        res.status(500).json({ message: 'Failed to fetch sales summary' });
     }
 });
 

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeftIcon } from '@heroicons/react/24/outline'
-import { productsAPI, categoriesAPI } from '../lib/api'
+import { productsAPI, categoriesAPI, departmentsAPI } from '../lib/api'
+import { useAuthStore } from '../stores/authStore'
 
 import LoadingSpinner from '../components/LoadingSpinner'
 import toast from 'react-hot-toast'
@@ -12,8 +13,9 @@ interface ProductForm {
   name: string
   sku: string
   categoryId?: string
-  unitPrice: number
-  lowStockThreshold: number
+  departmentId?: string
+  price: number
+  minimumStockLevel: number
   supplier?: string
   description?: string
   imageUrl?: string
@@ -24,7 +26,24 @@ export default function EditProduct() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { user } = useAuthStore()
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Permission check function
+  const canEditProduct = (product: any) => {
+    if (!user) return false
+    
+    // Managers (admins) can edit any product
+    if (user.role === 'manager') return true
+    
+    // Staff can only edit products in their department
+    // If product has no department assignment, only admins can edit
+    if (user.role === 'staff') {
+      return user.departmentId && product.department_id === user.departmentId
+    }
+    
+    return false
+  }
 
   const {
     register,
@@ -34,30 +53,57 @@ export default function EditProduct() {
     reset,
   } = useForm<ProductForm>()
 
-  const { data: productData, isLoading } = useQuery(
+  const { data: productData, isLoading, refetch } = useQuery(
     ['product', id],
     () => productsAPI.getProduct(id!),
     {
       enabled: !!id,
-      onSuccess: (data) => {
-        const product = data.data.product
-        reset({
-          name: product.name,
-          sku: product.sku,
-          categoryId: product.category_id || '',
-          unitPrice: product.price,
-          lowStockThreshold: product.minimum_stock_level,
-          supplier: product.supplier || '',
-          description: product.description || '',
-          isActive: product.is_active,
-        })
+      staleTime: 0, // Always refetch to ensure fresh data
+      cacheTime: 0, // Don't cache the data
+      refetchOnMount: 'always', // Always refetch when component mounts
+      retry: 3, // Retry failed requests up to 3 times
+      retryDelay: attemptIndex => Math.min(1000 * 2 ** attemptIndex, 30000), // Exponential backoff
+      onError: (error) => {
+        console.error('❌ Failed to load product:', error)
       }
     }
   )
 
+  // Use useEffect to handle form reset when product data changes
+  useEffect(() => {
+    if (productData?.data) {
+      // Handle both response formats: { product } or { data: { product } }
+      const product = productData.data.product || productData.data
+      
+      if (product && product.name) {
+        const formData = {
+          name: product.name,
+          sku: product.sku,
+          categoryId: product.category_id || '',
+          departmentId: product.department_id || '',
+          price: product.price,
+          minimumStockLevel: product.minimum_stock_level,
+          supplier: product.supplier || '',
+          description: product.description || '',
+          imageUrl: product.image_url || '',
+          isActive: product.is_active,
+        }
+        reset(formData)
+      }
+    }
+  }, [productData, reset])
+
   const { data: categoriesData } = useQuery(
     'categories',
     () => categoriesAPI.getCategories(),
+    {
+      staleTime: 10 * 60 * 1000,
+    }
+  )
+
+  const { data: departmentsData } = useQuery(
+    'departments',
+    () => departmentsAPI.getDepartments(),
     {
       staleTime: 10 * 60 * 1000,
     }
@@ -79,16 +125,52 @@ export default function EditProduct() {
   )
 
   const categories = Array.isArray(categoriesData?.data?.categories) ? categoriesData.data.categories : []
-  const product = productData?.data?.product || null
+  const departments = Array.isArray(departmentsData?.data?.departments) ? departmentsData.data.departments : []
+  const product = productData?.data?.product || productData?.data || null
+
+  // Check permissions after product is loaded
+  if (product && !canEditProduct(product)) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Link
+            to="/products"
+            className="p-2 text-gray-400 hover:text-gray-600 rounded-md"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Access Denied</h1>
+            <p className="text-sm text-gray-600">You do not have permission to edit this product</p>
+          </div>
+        </div>
+        <div className="card">
+          <div className="text-center py-12">
+            <p className="text-gray-500">
+              {product.department_id ? 
+                'This product belongs to a different department.' : 
+                'This product is unassigned and can only be edited by administrators.'
+              }
+            </p>
+            <p className="text-sm text-gray-400 mt-2">Contact your administrator for access.</p>
+            <Link to="/products" className="btn-primary mt-4">
+              Back to Products
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const onSubmit = async (data: ProductForm) => {
     setIsSubmitting(true)
     try {
       const formattedData = {
         ...data,
-        unitPrice: Number(data.unitPrice),
-        lowStockThreshold: Number(data.lowStockThreshold),
+        price: Number(data.price),
+        minimumStockLevel: Number(data.minimumStockLevel),
         categoryId: data.categoryId || undefined,
+        departmentId: data.departmentId || undefined,
       }
       
       await updateProductMutation.mutateAsync(formattedData)
@@ -120,8 +202,8 @@ export default function EditProduct() {
     )
   }
 
-  const unitPrice = watch('unitPrice')
-  const currentValue = (Number(product?.quantity_in_stock) || 0) * (Number(unitPrice) || 0)
+  const price = watch('price')
+  const currentValue = (Number(product?.quantity_in_stock) || 0) * (Number(price) || 0)
 
   return (
     <div className="space-y-6">
@@ -136,6 +218,19 @@ export default function EditProduct() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Edit Product</h1>
           <p className="text-sm text-gray-600">Update product information</p>
+          {/* Temporary debug info */}
+          <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+            <span>Data loaded: {productData ? '✅' : '❌'}</span>
+            <span>•</span>
+            <span>Product: {product?.name || 'Not loaded'}</span>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="text-blue-600 hover:text-blue-800 underline"
+            >
+              Refresh Data
+            </button>
+          </div>
         </div>
       </div>
 
@@ -204,6 +299,23 @@ export default function EditProduct() {
                 </div>
 
                 <div>
+                  <label htmlFor="departmentId" className="block text-sm font-medium text-gray-700">
+                    Department
+                  </label>
+                  <select
+                    {...register('departmentId')}
+                    className="mt-1 select-field"
+                  >
+                    <option value="">Select a department</option>
+                    {departments.map((department: any) => (
+                      <option key={department.id} value={department.id}>
+                        {department.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
                   <label htmlFor="supplier" className="block text-sm font-medium text-gray-700">
                     Supplier
                   </label>
@@ -254,7 +366,7 @@ export default function EditProduct() {
               <h2 className="text-lg font-medium text-gray-900 mb-4">Pricing & Settings</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label htmlFor="unitPrice" className="block text-sm font-medium text-gray-700">
+                  <label htmlFor="price" className="block text-sm font-medium text-gray-700">
                     Unit Price *
                   </label>
                   <div className="mt-1 relative rounded-md shadow-sm">
@@ -262,7 +374,7 @@ export default function EditProduct() {
                       <span className="text-gray-500 sm:text-sm">₦</span>
                     </div>
                     <input
-                      {...register('unitPrice', {
+                      {...register('price', {
                         required: 'Unit price is required',
                         min: { value: 0, message: 'Price cannot be negative' },
                         valueAsNumber: true
@@ -274,17 +386,17 @@ export default function EditProduct() {
                       placeholder="0.00"
                     />
                   </div>
-                  {errors.unitPrice && (
-                    <p className="mt-1 text-sm text-red-600">{errors.unitPrice.message}</p>
+                  {errors.price && (
+                    <p className="mt-1 text-sm text-red-600">{errors.price.message}</p>
                   )}
                 </div>
 
                 <div>
-                  <label htmlFor="lowStockThreshold" className="block text-sm font-medium text-gray-700">
+                  <label htmlFor="minimumStockLevel" className="block text-sm font-medium text-gray-700">
                     Low Stock Threshold *
                   </label>
                   <input
-                    {...register('lowStockThreshold', {
+                    {...register('minimumStockLevel', {
                       required: 'Low stock threshold is required',
                       min: { value: 0, message: 'Threshold cannot be negative' },
                       valueAsNumber: true
@@ -294,8 +406,8 @@ export default function EditProduct() {
                     className="mt-1 input-field"
                     placeholder="10"
                   />
-                  {errors.lowStockThreshold && (
-                    <p className="mt-1 text-sm text-red-600">{errors.lowStockThreshold.message}</p>
+                  {errors.minimumStockLevel && (
+                    <p className="mt-1 text-sm text-red-600">{errors.minimumStockLevel.message}</p>
                   )}
                 </div>
               </div>

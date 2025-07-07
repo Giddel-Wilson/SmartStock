@@ -3,7 +3,8 @@ import { useForm } from 'react-hook-form'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeftIcon } from '@heroicons/react/24/outline'
-import { productsAPI, categoriesAPI } from '../lib/api'
+import { productsAPI, categoriesAPI, departmentsAPI } from '../lib/api'
+import { useAuthStore } from '../stores/authStore'
 
 import LoadingSpinner from '../components/LoadingSpinner'
 import toast from 'react-hot-toast'
@@ -12,18 +13,50 @@ interface ProductForm {
   name: string
   sku: string
   categoryId?: string
+  departmentId?: string
   quantity: number
-  unitPrice: number
-  lowStockThreshold: number
+  price: number
+  minimumStockLevel: number
   supplier?: string
   description?: string
+  imageUrl?: string
   isActive: boolean
 }
 
 export default function CreateProduct() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { user } = useAuthStore()
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Check if user has permission to create products
+  if (!user || user.role !== 'manager') {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Link
+            to="/products"
+            className="p-2 text-gray-400 hover:text-gray-600 rounded-md"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Access Denied</h1>
+            <p className="text-sm text-gray-600">Only administrators can create products</p>
+          </div>
+        </div>
+        <div className="card">
+          <div className="text-center py-12">
+            <p className="text-gray-500">You do not have permission to create products.</p>
+            <p className="text-sm text-gray-400 mt-2">Contact your administrator for access.</p>
+            <Link to="/products" className="btn-primary mt-4">
+              Back to Products
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const {
     register,
@@ -34,8 +67,8 @@ export default function CreateProduct() {
     defaultValues: {
       isActive: true,
       quantity: 0,
-      unitPrice: 0,
-      lowStockThreshold: 10,
+      price: 0,
+      minimumStockLevel: 10,
     }
   })
 
@@ -47,8 +80,16 @@ export default function CreateProduct() {
     }
   )
 
+  const { data: departmentsData } = useQuery(
+    'departments',
+    () => departmentsAPI.getDepartments(),
+    {
+      staleTime: 10 * 60 * 1000,
+    }
+  )
+
   const createProductMutation = useMutation(
-    (data: ProductForm) => productsAPI.createProduct(data),
+    (data: any) => productsAPI.createProduct(data),
     {
       onSuccess: (response) => {
         toast.success('Product created successfully')
@@ -62,6 +103,7 @@ export default function CreateProduct() {
   )
 
   const categories = Array.isArray(categoriesData?.data?.categories) ? categoriesData.data.categories : []
+  const departments = Array.isArray(departmentsData?.data?.departments) ? departmentsData.data.departments : []
 
   const onSubmit = async (data: ProductForm) => {
     setIsSubmitting(true)
@@ -71,9 +113,10 @@ export default function CreateProduct() {
         name: data.name,
         sku: data.sku,
         categoryId: data.categoryId || undefined,
+        departmentId: data.departmentId || undefined,
         quantity: Number(data.quantity),
-        unitPrice: Number(data.unitPrice),
-        lowStockThreshold: Number(data.lowStockThreshold),
+        price: Number(data.price),
+        minimumStockLevel: Number(data.minimumStockLevel),
         supplier: data.supplier || undefined,
         description: data.description || undefined,
       }
@@ -87,8 +130,8 @@ export default function CreateProduct() {
   }
 
   const quantity = watch('quantity')
-  const unitPrice = watch('unitPrice')
-  const totalValue = (Number(quantity) || 0) * (Number(unitPrice) || 0)
+  const price = watch('price')
+  const totalValue = (Number(quantity) || 0) * (Number(price) || 0)
 
   return (
     <div className="space-y-6">
@@ -171,6 +214,23 @@ export default function CreateProduct() {
                 </div>
 
                 <div>
+                  <label htmlFor="departmentId" className="block text-sm font-medium text-gray-700">
+                    Department
+                  </label>
+                  <select
+                    {...register('departmentId')}
+                    className="mt-1 select-field"
+                  >
+                    <option value="">Select a department</option>
+                    {departments.map((department: any) => (
+                      <option key={department.id} value={department.id}>
+                        {department.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
                   <label htmlFor="supplier" className="block text-sm font-medium text-gray-700">
                     Supplier
                   </label>
@@ -221,7 +281,7 @@ export default function CreateProduct() {
                 </div>
 
                 <div>
-                  <label htmlFor="unitPrice" className="block text-sm font-medium text-gray-700">
+                  <label htmlFor="price" className="block text-sm font-medium text-gray-700">
                     Unit Price *
                   </label>
                   <div className="mt-1 relative rounded-md shadow-sm">
@@ -229,7 +289,7 @@ export default function CreateProduct() {
                       <span className="text-gray-500 sm:text-sm">₦</span>
                     </div>
                     <input
-                      {...register('unitPrice', {
+                      {...register('price', {
                         required: 'Unit price is required',
                         min: { value: 0, message: 'Price cannot be negative' },
                         valueAsNumber: true
@@ -241,17 +301,17 @@ export default function CreateProduct() {
                       placeholder="0.00"
                     />
                   </div>
-                  {errors.unitPrice && (
-                    <p className="mt-1 text-sm text-red-600">{errors.unitPrice.message}</p>
+                  {errors.price && (
+                    <p className="mt-1 text-sm text-red-600">{errors.price.message}</p>
                   )}
                 </div>
 
                 <div>
-                  <label htmlFor="lowStockThreshold" className="block text-sm font-medium text-gray-700">
+                  <label htmlFor="minimumStockLevel" className="block text-sm font-medium text-gray-700">
                     Low Stock Threshold *
                   </label>
                   <input
-                    {...register('lowStockThreshold', {
+                    {...register('minimumStockLevel', {
                       required: 'Low stock threshold is required',
                       min: { value: 0, message: 'Threshold cannot be negative' },
                       valueAsNumber: true
@@ -261,8 +321,8 @@ export default function CreateProduct() {
                     className="mt-1 input-field"
                     placeholder="10"
                   />
-                  {errors.lowStockThreshold && (
-                    <p className="mt-1 text-sm text-red-600">{errors.lowStockThreshold.message}</p>
+                  {errors.minimumStockLevel && (
+                    <p className="mt-1 text-sm text-red-600">{errors.minimumStockLevel.message}</p>
                   )}
                 </div>
               </div>
@@ -299,7 +359,7 @@ export default function CreateProduct() {
                 <div className="flex justify-between">
                   <span className="text-sm text-gray-500">Unit Price</span>
                   <span className="text-sm font-medium text-gray-900">
-                    ₦{Number(unitPrice || 0).toFixed(2)}
+                    ₦{Number(price || 0).toFixed(2)}
                   </span>
                 </div>
                 <div className="flex justify-between border-t pt-3">

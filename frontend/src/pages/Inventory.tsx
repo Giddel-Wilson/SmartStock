@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useForm } from 'react-hook-form'
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline'
 import { inventoryAPI, productsAPI } from '../lib/api'
+import { useAuthStore } from '../stores/authStore'
 
 import LoadingSpinner from '../components/LoadingSpinner'
 import toast from 'react-hot-toast'
@@ -17,9 +18,40 @@ interface StockAdjustmentForm {
 
 export default function Inventory() {
   const queryClient = useQueryClient()
+  const { user } = useAuthStore()
   const [search, setSearch] = useState('')
   const [selectedProduct, setSelectedProduct] = useState<any>(null)
   const [showAdjustmentModal, setShowAdjustmentModal] = useState(false)
+
+  // Check if user can adjust stock for a product
+  const canAdjustStock = (product: any) => {
+    if (!user) return false
+    
+    // Debug logging
+    console.log('🔍 Permission check:', {
+      userName: user.name,
+      userRole: user.role,
+      userDeptId: user.departmentId,
+      userDeptName: user.departmentName,
+      productName: product.name,
+      productDeptId: product.department_id,
+      productDeptName: product.department_name
+    })
+    
+    // Managers (admins) can adjust stock for any product
+    if (user.role === 'manager') return true
+    
+    // Staff can only adjust stock for products in their department
+    // If product has no department assignment, only admins can adjust
+    if (user.role === 'staff') {
+      // Backend returns department_id (snake_case), frontend user has departmentId (camelCase)
+      const canAdjust = user.departmentId && product.department_id === user.departmentId
+      console.log('🔍 Staff permission result:', canAdjust)
+      return canAdjust
+    }
+    
+    return false
+  }
 
   const {
     register,
@@ -83,6 +115,11 @@ export default function Inventory() {
   const products = Array.isArray(productsData?.data?.products) ? productsData.data.products : []
 
   const handleAdjustStock = (product: any) => {
+    if (!canAdjustStock(product)) {
+      toast.error('You do not have permission to adjust stock for this product')
+      return
+    }
+    
     setSelectedProduct(product)
     reset({
       productId: product.id,
@@ -155,6 +192,9 @@ export default function Inventory() {
                     SKU
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Department
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Current Stock
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -198,6 +238,9 @@ export default function Inventory() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {product.sku}
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {product.department_name || 'Unassigned'}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">{product.quantity_in_stock}</div>
                       <div className="text-xs text-gray-500">
@@ -214,12 +257,21 @@ export default function Inventory() {
                       )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <button
-                        onClick={() => handleAdjustStock(product)}
-                        className="text-primary-600 hover:text-primary-700 font-medium"
-                      >
-                        Adjust Stock
-                      </button>
+                      {canAdjustStock(product) ? (
+                        <button
+                          onClick={() => handleAdjustStock(product)}
+                          className="text-primary-600 hover:text-primary-700 font-medium"
+                        >
+                          Adjust Stock
+                        </button>
+                      ) : (
+                        <span className="text-gray-400 text-sm">
+                          {product.department_id ? 
+                            (user?.role === 'staff' ? 'Different Dept.' : 'No Access') : 
+                            'Unassigned - Admin Only'
+                          }
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}

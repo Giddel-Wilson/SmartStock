@@ -85,6 +85,41 @@ export const useAuthStore = create<AuthState>()(
         refreshToken: state.refreshToken,
         isAuthenticated: state.isAuthenticated,
       }),
+      onRehydrateStorage: () => (state) => {
+        // Migration: Fix field mapping for existing users
+        if (state?.user) {
+          const user = state.user as any
+          let needsMigration = false
+          const fixedUser = { ...state.user }
+          
+          // Migrate department_id to departmentId
+          if (!state.user.departmentId && user.department_id) {
+            fixedUser.departmentId = user.department_id
+            needsMigration = true
+          }
+          
+          // Migrate department_name to departmentName  
+          if (!state.user.departmentName && user.department_name) {
+            fixedUser.departmentName = user.department_name
+            needsMigration = true
+          }
+          
+          // Remove old snake_case fields
+          if (user.department_id) {
+            delete (fixedUser as any).department_id
+            needsMigration = true
+          }
+          if (user.department_name) {
+            delete (fixedUser as any).department_name
+            needsMigration = true
+          }
+          
+          if (needsMigration) {
+            state.user = fixedUser
+            console.log('🔧 Migrated user field mapping:', fixedUser)
+          }
+        }
+      },
     }
   )
 )

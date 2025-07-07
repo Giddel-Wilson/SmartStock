@@ -9,7 +9,7 @@ import {
   PencilIcon,
   TrashIcon,
 } from '@heroicons/react/24/outline'
-import { productsAPI, categoriesAPI } from '../lib/api'
+import { productsAPI, categoriesAPI, departmentsAPI } from '../lib/api'
 import LoadingSpinner from '../components/LoadingSpinner'
 import { useAuthStore } from '../stores/authStore'
 
@@ -19,17 +19,40 @@ export default function Products() {
   const { user } = useAuthStore()
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
+  const [departmentFilter, setDepartmentFilter] = useState('')
   const [lowStockFilter, setLowStockFilter] = useState(false)
   const [sortBy, setSortBy] = useState('name')
   const [sortOrder, setSortOrder] = useState('asc')
   const [page, setPage] = useState(1)
   const [showFilters, setShowFilters] = useState(false)
 
+  // Permission check function
+  const canEditProduct = (product: any) => {
+    if (!user) return false
+    
+    // Managers (admins) can edit any product
+    if (user.role === 'manager') return true
+    
+    // Staff can only edit products in their department
+    // If product has no department assignment, only admins can edit
+    if (user.role === 'staff') {
+      return user.departmentId && product.department_id === user.departmentId
+    }
+    
+    return false
+  }
+
+  const canDeleteProduct = (product: any) => {
+    // Only managers (admins) can delete products
+    return user?.role === 'manager'
+  }
+
   const { data: productsData, isLoading, refetch } = useQuery(
-    ['products', { search, categoryFilter, lowStockFilter, sortBy, sortOrder, page }],
+    ['products', { search, categoryFilter, departmentFilter, lowStockFilter, sortBy, sortOrder, page }],
     () => productsAPI.getProducts({
       search,
       category: categoryFilter,
+      department: departmentFilter,
       lowStock: lowStockFilter,
       sortBy,
       sortOrder,
@@ -45,6 +68,14 @@ export default function Products() {
   const { data: categoriesData } = useQuery(
     'categories',
     () => categoriesAPI.getCategories(),
+    {
+      staleTime: 10 * 60 * 1000,
+    }
+  )
+
+  const { data: departmentsData } = useQuery(
+    'departments',
+    () => departmentsAPI.getDepartments(),
     {
       staleTime: 10 * 60 * 1000,
     }
@@ -76,6 +107,16 @@ export default function Products() {
     }
   })()
 
+  const departments = (() => {
+    try {
+      if (!departmentsData?.data?.departments) return []
+      return departmentsData.data.departments
+    } catch (error) {
+      console.error('Error processing departments:', error)
+      return []
+    }
+  })()
+
   const handleDeleteProduct = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return
 
@@ -91,6 +132,7 @@ export default function Products() {
   const handleClearFilters = () => {
     setSearch('')
     setCategoryFilter('')
+    setDepartmentFilter('')
     setLowStockFilter(false)
     setSortBy('name')
     setSortOrder('asc')
@@ -123,10 +165,13 @@ export default function Products() {
             <FunnelIcon className="h-4 w-4" />
             Filters
           </button>
-          <Link to="/products/new" className="btn-primary flex items-center gap-2">
-            <PlusIcon className="h-4 w-4" />
-            Add Product
-          </Link>
+          {/* Only show Add Product button for managers (admins) */}
+          {user?.role === 'manager' && (
+            <Link to="/products/new" className="btn-primary flex items-center gap-2">
+              <PlusIcon className="h-4 w-4" />
+              Add Product
+            </Link>
+          )}
         </div>
       </div>
 
@@ -157,6 +202,19 @@ export default function Products() {
                 {categories.map((category: any) => (
                   <option key={category.id} value={category.id}>
                     {category.name}
+                  </option>
+                ))}
+              </select>
+              
+              <select
+                value={departmentFilter}
+                onChange={(e) => setDepartmentFilter(e.target.value)}
+                className="select-field"
+              >
+                <option value="">All Departments</option>
+                {departments.map((department: any) => (
+                  <option key={department.id} value={department.id}>
+                    {department.name}
                   </option>
                 ))}
               </select>
@@ -219,6 +277,9 @@ export default function Products() {
                   Category
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Department
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Quantity
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -262,6 +323,9 @@ export default function Products() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {product.category_name || 'Uncategorized'}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {product.department_name || 'Unassigned'}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
                       <span className="text-sm text-gray-900">{product.quantity_in_stock || 0}</span>
@@ -292,14 +356,23 @@ export default function Products() {
                       >
                         <EyeIcon className="h-4 w-4" />
                       </Link>
-                      <Link
-                        to={`/products/${product.id}/edit`}
-                        className="text-gray-600 hover:text-gray-700"
-                        title="Edit"
-                      >
-                        <PencilIcon className="h-4 w-4" />
-                      </Link>
-                      {user?.role === 'manager' && (
+                      {canEditProduct(product) ? (
+                        <Link
+                          to={`/products/${product.id}/edit`}
+                          className="text-gray-600 hover:text-gray-700"
+                          title="Edit"
+                        >
+                          <PencilIcon className="h-4 w-4" />
+                        </Link>
+                      ) : (
+                        <span 
+                          className="text-gray-300"
+                          title={user?.role === 'staff' ? 'Product not in your department' : 'No edit permission'}
+                        >
+                          <PencilIcon className="h-4 w-4" />
+                        </span>
+                      )}
+                      {canDeleteProduct(product) && (
                         <button
                           onClick={() => handleDeleteProduct(product.id, product.name)}
                           className="text-red-600 hover:text-red-700"
@@ -327,7 +400,7 @@ export default function Products() {
                 ? 'Try adjusting your search or filter criteria.'
                 : 'Get started by creating your first product.'}
             </p>
-            {!search && !categoryFilter && !lowStockFilter && (
+            {!search && !categoryFilter && !lowStockFilter && user?.role === 'manager' && (
               <div className="mt-6">
                 <Link to="/products/new" className="btn-primary">
                   <PlusIcon className="h-4 w-4 mr-2" />

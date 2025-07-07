@@ -32,7 +32,14 @@ export default function Login() {
     
     try {
       const response = await authAPI.login(data.email, data.password)
-      const { user, accessToken, refreshToken } = response.data
+      const { user: rawUser, accessToken, refreshToken } = response.data
+      
+      // Map backend field names to frontend interface
+      const user = {
+        ...rawUser,
+        departmentId: rawUser.department_id,
+        departmentName: rawUser.department_name
+      }
       
       login(user, accessToken, refreshToken)
       toast.success(`Welcome back, ${user.name}!`)

@@ -6,26 +6,65 @@ const { activityLogger } = require('../middleware/activityLogger');
 
 const router = express.Router();
 
+// Helper function to check if user can access/modify a product based on department
+const canAccessProduct = (user, product) => {
+    // Managers can access all products
+    if (user.role === 'manager') {
+        return true;
+    }
+    
+    // Staff can only access products in their department
+    // If product has no department, only managers can access it
+    if (!product.department_id) {
+        return false;
+    }
+    
+    return user.department_id === product.department_id;
+};
+
+// Helper function to get department-filtered query conditions
+const getDepartmentFilter = (user, tableAlias = 'p') => {
+    if (user.role === 'manager') {
+        return { whereClause: '', params: [] };
+    }
+    
+    // Staff can only see products in their department
+    return {
+        whereClause: `AND ${tableAlias}.department_id = $`,
+        params: [user.department_id]
+    };
+};
+
 // Validation schemas
 const productSchema = Joi.object({
     name: Joi.string().min(1).max(200).required(),
     sku: Joi.string().min(1).max(100).required(),
     categoryId: Joi.string().uuid().optional(),
+    departmentId: Joi.string().uuid().optional(),
     quantity: Joi.number().integer().min(0).default(0),
-    unitPrice: Joi.number().min(0).required(),
-    lowStockThreshold: Joi.number().integer().min(0).default(10),
+    price: Joi.number().min(0).required(),
+    cost: Joi.number().min(0).optional(),
+    minimumStockLevel: Joi.number().integer().min(0).default(10),
+    maximumStockLevel: Joi.number().integer().min(0).optional(),
     supplier: Joi.string().max(200).optional(),
-    description: Joi.string().optional()
+    location: Joi.string().max(100).optional(),
+    description: Joi.string().optional(),
+    imageUrl: Joi.string().uri().allow('').optional()
 });
 
 const updateProductSchema = Joi.object({
     name: Joi.string().min(1).max(200).optional(),
     sku: Joi.string().min(1).max(100).optional(),
     categoryId: Joi.string().uuid().allow(null).optional(),
-    unitPrice: Joi.number().min(0).optional(),
-    lowStockThreshold: Joi.number().integer().min(0).optional(),
+    departmentId: Joi.string().uuid().allow(null).optional(),
+    price: Joi.number().min(0).optional(),
+    cost: Joi.number().min(0).optional(),
+    minimumStockLevel: Joi.number().integer().min(0).optional(),
+    maximumStockLevel: Joi.number().integer().min(0).optional(),
     supplier: Joi.string().max(200).allow('').optional(),
+    location: Joi.string().max(100).allow('').optional(),
     description: Joi.string().allow('').optional(),
+    imageUrl: Joi.string().uri().allow('').optional(),
     isActive: Joi.boolean().optional()
 });
 
@@ -133,6 +172,13 @@ router.get('/', authenticateToken, async (req, res) => {
             whereConditions.push('p.quantity_in_stock <= p.minimum_stock_level');
         }
 
+        // Department filter (staff can only see their department's products)
+        if (req.user.role === 'staff' && req.user.department_id) {
+            whereConditions.push(`p.department_id = $${paramIndex}`);
+            queryParams.push(req.user.department_id);
+            paramIndex++;
+        }
+
         const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
         // Get total count
@@ -146,10 +192,11 @@ router.get('/', authenticateToken, async (req, res) => {
 
         // Get products
         const query = `
-            SELECT p.*, c.name as category_name,
+            SELECT p.*, c.name as category_name, d.name as department_name,
                    CASE WHEN p.quantity_in_stock <= p.minimum_stock_level THEN true ELSE false END as is_low_stock
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN departments d ON p.department_id = d.id
             ${whereClause}
             ORDER BY p.${orderBy} ${order}
             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -192,7 +239,13 @@ router.get('/:id', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'Product not found' });
         }
 
-        res.json({ product: result.rows[0] });
+        // Check department access
+        const product = result.rows[0];
+        if (!canAccessProduct(req.user, product)) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        res.json({ product });
     } catch (error) {
         console.error('Get product error:', error);
         res.status(500).json({ error: 'Failed to fetch product' });
@@ -213,11 +266,16 @@ router.post('/', authenticateToken, requireManager, activityLogger('CREATE_PRODU
             name,
             sku,
             categoryId,
-            quantity,
-            unitPrice,
-            lowStockThreshold,
+            departmentId,
+            quantity = 0,
+            price,
+            cost,
+            minimumStockLevel = 10,
+            maximumStockLevel,
             supplier,
-            description
+            location,
+            description,
+            imageUrl
         } = value;
 
         // Check if SKU already exists
@@ -234,12 +292,28 @@ router.post('/', authenticateToken, requireManager, activityLogger('CREATE_PRODU
             }
         }
 
+        // Validate department if provided
+        if (departmentId) {
+            const department = await db.query('SELECT id FROM departments WHERE id = $1', [departmentId]);
+            if (department.rows.length === 0) {
+                return res.status(400).json({ error: 'Department not found' });
+            }
+        }
+
         // Create product
         const result = await db.query(`
-            INSERT INTO products (name, sku, category_id, quantity_in_stock, price, minimum_stock_level, supplier, description)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO products (
+                name, sku, category_id, department_id, quantity_in_stock, 
+                price, cost, minimum_stock_level, maximum_stock_level, 
+                supplier, location, description, image_url
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
-        `, [name, sku, categoryId, quantity, unitPrice, lowStockThreshold, supplier, description]);
+        `, [
+            name, sku, categoryId, departmentId, quantity, 
+            price, cost, minimumStockLevel, maximumStockLevel, 
+            supplier, location, description, imageUrl
+        ]);
 
         const newProduct = result.rows[0];
 
@@ -298,14 +372,24 @@ router.put('/:id', authenticateToken, requireManager, activityLogger('UPDATE_PRO
             }
         }
 
-        // Build update query dynamically
+        // Build update query dynamically with proper field mapping
+        const fieldMapping = {
+            categoryId: 'category_id',
+            departmentId: 'department_id',
+            minimumStockLevel: 'minimum_stock_level',
+            maximumStockLevel: 'maximum_stock_level',
+            imageUrl: 'image_url',
+            isActive: 'is_active'
+            // Other fields use their original names: name, sku, price, cost, supplier, location, description
+        };
+
         const updateFields = [];
         const updateValues = [];
         let paramIndex = 1;
 
         Object.entries(value).forEach(([key, val]) => {
             if (val !== undefined) {
-                const columnName = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+                const columnName = fieldMapping[key] || key;
                 updateFields.push(`${columnName} = $${paramIndex}`);
                 updateValues.push(val);
                 paramIndex++;

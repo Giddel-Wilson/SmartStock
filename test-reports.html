@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartStock Reports Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .card { border: 1px solid #ddd; padding: 20px; margin: 10px 0; border-radius: 8px; }
+        .error { color: red; }
+        .success { color: green; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>SmartStock Reports API Test</h1>
+    
+    <div class="card">
+        <h2>Authentication</h2>
+        <button onclick="login()">Login as Admin</button>
+        <div id="authStatus"></div>
+    </div>
+
+    <div class="card">
+        <h2>API Endpoints Test</h2>
+        <button onclick="testInventorySummary()">Test Inventory Summary</button>
+        <button onclick="testLowStock()">Test Low Stock Report</button>
+        <button onclick="testMovements()">Test Inventory Movements</button>
+        <div id="apiResults"></div>
+    </div>
+
+    <script>
+        let authToken = '';
+
+        async function login() {
+            const statusDiv = document.getElementById('authStatus');
+            statusDiv.innerHTML = 'Logging in...';
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        email: 'admin@smartstock.com',
+                        password: 'SecurePassword123!'
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    authToken = data.accessToken;
+                    statusDiv.innerHTML = `<span class="success">✅ Login successful! Token: ${authToken.substring(0, 50)}...</span>`;
+                } else {
+                    const error = await response.text();
+                    statusDiv.innerHTML = `<span class="error">❌ Login failed: ${error}</span>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<span class="error">❌ Network error: ${error.message}</span>`;
+            }
+        }
+
+        async function testEndpoint(endpoint, name) {
+            if (!authToken) {
+                alert('Please login first!');
+                return;
+            }
+
+            const resultsDiv = document.getElementById('apiResults');
+            resultsDiv.innerHTML += `<p>Testing ${name}...</p>`;
+
+            try {
+                const response = await fetch(`http://localhost:3001${endpoint}`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    resultsDiv.innerHTML += `
+                        <h3 class="success">✅ ${name} - Success</h3>
+                        <pre>${JSON.stringify(data, null, 2).substring(0, 500)}...</pre>
+                    `;
+                } else {
+                    const error = await response.text();
+                    resultsDiv.innerHTML += `
+                        <h3 class="error">❌ ${name} - Failed (${response.status})</h3>
+                        <pre>${error}</pre>
+                    `;
+                }
+            } catch (error) {
+                resultsDiv.innerHTML += `
+                    <h3 class="error">❌ ${name} - Error</h3>
+                    <pre>${error.message}</pre>
+                `;
+            }
+        }
+
+        function testInventorySummary() {
+            testEndpoint('/api/inventory/summary', 'Inventory Summary');
+        }
+
+        function testLowStock() {
+            testEndpoint('/api/reports/low-stock', 'Low Stock Report');
+        }
+
+        function testMovements() {
+            testEndpoint('/api/reports/inventory-movements?limit=5', 'Inventory Movements');
+        }
+
+        // Test on page load
+        window.addEventListener('load', () => {
+            console.log('SmartStock Reports Test Page Loaded');
+        });
+    </script>
+</body>
+</html>

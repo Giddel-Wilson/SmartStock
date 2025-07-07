@@ -2,14 +2,30 @@ import axios, { AxiosInstance, AxiosRequestConfig } from 'axios'
 import { useAuthStore } from '../stores/authStore'
 import toast from 'react-hot-toast'
 
+// Dynamic API base URL function
+const getApiBaseUrl = () => {
+  const protocol = window.location.protocol;
+  const hostname = window.location.hostname;
+  
+  // If accessing via localhost, use localhost for API
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:3001/api';
+  }
+  
+  // If accessing via network IP, use the same IP for API
+  return `${protocol}//${hostname}:3001/api`;
+};
+
 // Create axios instance
 const api: AxiosInstance = axios.create({
-  baseURL: '/api',
+  baseURL: getApiBaseUrl(),
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
 })
+
+console.log('🔗 API Base URL:', getApiBaseUrl());
 
 // Request interceptor to add auth token
 api.interceptors.request.use(
